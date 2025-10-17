@@ -1,0 +1,54 @@
+---
+- name: Generar inventario CSV detallado de VMs en OCI (Versión Final)
+  hosts: localhost
+  connection: local
+  
+  vars:
+    tenancy_ocid: "ocid1.tenancy.oc1..aaaaaaaadubbgctqd2ycibpstffwccwb4m4xfcccbfjhu3yldelqprhfzuxq"
+    output_csv_file: "inventario_detallado_vms.csv"
+
+  tasks:
+    - name: Paso 1 - Obtener TODOS los compartimentos y sub-compartimentos
+      oracle.oci.oci_identity_compartment_facts:
+        parent_compartment_id: "{{ tenancy_ocid }}"
+        access_level: "ANY"
+        compartment_id_in_subtree: true
+      register: all_compartments_result
+
+    - name: Paso 2 - Crear un mapa de ID de compartimento a Nombre
+      ansible.builtin.set_fact:
+        compartment_name_map: "{{ all_compartments_result.compartments | items2dict(key_name='id', value_name='name') }}"
+      run_once: true
+
+    - name: Paso 3 - Recorrer cada compartimento y buscar las VMs
+      oracle.oci.oci_compute_instance_facts:
+        compartment_id: "{{ item.id }}"
+      loop: "{{ all_compartments_result.compartments }}"
+      register: instances_data
+
+    - name: Paso 4 - Crear el archivo CSV y escribir la cabecera
+      ansible.builtin.copy:
+        dest: "{{ output_csv_file }}"
+        content: "CompartmentName,CompartmentID,InstanceName,InstanceID,LifecycleState,Shape,Ocpus,Vcpus,MemoryGB,ProcessorDescription,PrivateIP,AvailabilityDomain,TimeCreated"
+        force: yes
+      run_once: true
+
+    - name: Paso 5 - Añadir cada VM como una fila en el CSV
+      ansible.builtin.lineinfile:
+        path: "{{ output_csv_file }}"
+        line: >-
+          {{ compartment_name_map[item.compartment_id] | default('N/A') }},
+          {{ item.compartment_id | default('N/A') }},
+          {{ item.display_name | default('N/A') }},
+          {{ item.id | default('N/A') }},
+          {{ item.lifecycle_state | default('N/A') }},
+          {{ item.shape | default('N/A') }},
+          {{ item.shape_config.ocpus | default('N/A') }},
+          {{ item.shape_config.vcpus | default('N/A') }},
+          {{ item.shape_config.memory_in_gbs | default('N/A') }},
+          {{ item.shape_config.processor_description | default('N/A') }},
+          {{ item.primary_private_ip | default('N/A') }},
+          {{ item.availability_domain | default('N/A') }},
+          {{ item.time_created | default('N/A') }}
+      loop: "{{ instances_data.results | map(attribute='instances') | flatten }}"
+      when: item.lifecycle_state != 'TERMINATED'
